@@ -2,6 +2,7 @@
 using Aspire.Hosting.Lifecycle;
 using Aspire.Hosting.Yarp;
 using Aspire.Hosting.Yarp.Transforms;
+using Microsoft.Extensions.DependencyInjection;
 using Yarp.ReverseProxy.Configuration;
 
 namespace eShop.AppHost;
@@ -43,49 +44,46 @@ internal static class Extensions
         this IDistributedApplicationBuilder builder,
         IResourceBuilder<ContainerResource> signozOtelCollector)
     {
-        builder.Services.TryAddEventingSubscriber<SigNozOpenTelemetrySubscriber>();
-        builder.Services.AddSingleton(signozOtelCollector);
+        builder.Services.TryAddLifecycleHook<SigNozOpenTelemetryLifecycleHook>();
+        builder.Services.AddSingleton(new SigNozCollectorReference(signozOtelCollector));
         return builder;
     }
 
-    private class SigNozOpenTelemetrySubscriber(IResourceBuilder<ContainerResource> signozOtelCollector) : IDistributedApplicationEventingSubscriber
+    private record SigNozCollectorReference(IResourceBuilder<ContainerResource> OtelCollector);
+
+    private class SigNozOpenTelemetryLifecycleHook(SigNozCollectorReference collectorRef) : IDistributedApplicationLifecycleHook
     {
-        public Task SubscribeAsync(IDistributedApplicationEventing eventing, DistributedApplicationExecutionContext executionContext, CancellationToken cancellationToken)
+        public Task BeforeStartAsync(DistributedApplicationModel appModel, CancellationToken cancellationToken = default)
         {
-            eventing.Subscribe<BeforeStartEvent>((@event, ct) =>
+            // Only redirect telemetry to SigNoz if explicitly enabled
+            // This preserves Aspire dashboard functionality by default
+            var useSigNoz = GetUseSigNozSetting();
+            if (!useSigNoz)
             {
-                // Only redirect telemetry to SigNoz if explicitly enabled
-                // This preserves Aspire dashboard functionality by default
-                var useSigNoz = GetUseSigNozSetting();
-                if (!useSigNoz)
-                {
-                    return Task.CompletedTask;
-                }
-
-                var otlpEndpoint = signozOtelCollector.GetEndpoint("http");
-
-                foreach (var p in @event.Model.GetProjectResources())
-                {
-                    p.Annotations.Add(new EnvironmentCallbackAnnotation(context =>
-                    {
-                        // Configure OTLP exporter to send to SigNoz using HTTP protocol
-                        context.EnvironmentVariables["OTEL_EXPORTER_OTLP_ENDPOINT"] = $"{otlpEndpoint}";
-                        context.EnvironmentVariables["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf";
-
-                        // Set resource attributes for better identification in SigNoz
-                        // Note: OTEL_SERVICE_NAME is already set by Aspire, so we only add extra attributes
-                        var environment = executionContext.IsPublishMode ? "production" : "development";
-                        var existingAttrs = context.EnvironmentVariables.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out var attrs) ? attrs : "";
-                        var additionalAttrs = $"deployment.environment={environment}";
-
-                        context.EnvironmentVariables["OTEL_RESOURCE_ATTRIBUTES"] = string.IsNullOrEmpty(existingAttrs)
-                            ? additionalAttrs
-                            : $"{existingAttrs},{additionalAttrs}";
-                    }));
-                }
-
                 return Task.CompletedTask;
-            });
+            }
+
+            var otlpEndpoint = collectorRef.OtelCollector.GetEndpoint("http");
+
+            foreach (var projectResource in appModel.Resources.OfType<ProjectResource>())
+            {
+                projectResource.Annotations.Add(new EnvironmentCallbackAnnotation(context =>
+                {
+                    // Configure OTLP exporter to send to SigNoz using HTTP protocol
+                    context.EnvironmentVariables["OTEL_EXPORTER_OTLP_ENDPOINT"] = $"{otlpEndpoint}";
+                    context.EnvironmentVariables["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf";
+
+                    // Set resource attributes for better identification in SigNoz
+                    // Note: OTEL_SERVICE_NAME is already set by Aspire, so we only add extra attributes
+                    var environment = context.ExecutionContext.IsPublishMode ? "production" : "development";
+                    var existingAttrs = context.EnvironmentVariables.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out var attrsObj) && attrsObj is string attrs ? attrs : "";
+                    var additionalAttrs = $"deployment.environment={environment}";
+
+                    context.EnvironmentVariables["OTEL_RESOURCE_ATTRIBUTES"] = string.IsNullOrEmpty(existingAttrs)
+                        ? additionalAttrs
+                        : $"{existingAttrs},{additionalAttrs}";
+                }));
+            }
 
             return Task.CompletedTask;
         }

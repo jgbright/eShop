@@ -84,10 +84,12 @@ Once enabled and the application is running:
 
 ## Data Persistence
 
-SigNoz uses persistent Docker volumes to retain data between restarts:
-- `signoz-zookeeper-data`: Zookeeper coordination data
-- `signoz-clickhouse-data`: All telemetry data (traces, metrics, logs)
+SigNoz data persists between restarts using bind-mounted directories:
+- `src/eShop.AppHost/.data/signoz-zookeeper/`: Zookeeper coordination data
+- `src/eShop.AppHost/.data/signoz-clickhouse/`: All telemetry data (traces, metrics, logs)
 - Configuration files are bind-mounted from this directory using absolute paths
+
+The `.data` directory is automatically created by Aspire and is gitignored.
 
 ## Customization
 

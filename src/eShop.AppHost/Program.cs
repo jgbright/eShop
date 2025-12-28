@@ -26,7 +26,7 @@ var zookeeper = builder.AddContainer("signoz-zookeeper", "bitnami/zookeeper")
     .WithImageTag("3.9.1")
     .WithEnvironment("ALLOW_ANONYMOUS_LOGIN", "yes")
     .WithLifetime(ContainerLifetime.Persistent)
-    .WithDataVolume("signoz-zookeeper-data", "/bitnami/zookeeper");
+    .WithBindMount(Path.Combine(builder.AppHostDirectory, ".data", "signoz-zookeeper"), "/bitnami/zookeeper");
 
 var clickhouse = builder.AddContainer("signoz-clickhouse", "clickhouse/clickhouse-server")
     .WithImageTag("24.1.2-alpine")
@@ -35,7 +35,7 @@ var clickhouse = builder.AddContainer("signoz-clickhouse", "clickhouse/clickhous
     .WithLifetime(ContainerLifetime.Persistent)
     .WithBindMount(Path.Combine(signozConfigPath, "clickhouse-config.xml"), "/etc/clickhouse-server/config.d/config.xml")
     .WithBindMount(Path.Combine(signozConfigPath, "clickhouse-user-config.xml"), "/etc/clickhouse-server/users.d/users.xml")
-    .WithDataVolume("signoz-clickhouse-data")
+    .WithBindMount(Path.Combine(builder.AppHostDirectory, ".data", "signoz-clickhouse"), "/var/lib/clickhouse")
     .WaitFor(zookeeper);
 
 // Schema migrator creates required ClickHouse tables for SigNoz
