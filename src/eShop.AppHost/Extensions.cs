@@ -27,8 +27,21 @@ internal static class Extensions
 
     /// <summary>
     /// Configures OpenTelemetry to send telemetry data to SigNoz.
+    ///
+    /// IMPORTANT: By default, this does NOT override Aspire's built-in dashboard telemetry.
+    /// To redirect telemetry to SigNoz instead of (or in addition to) the Aspire dashboard,
+    /// set the environment variable ESHOP_USE_SIGNOZ=1 before running the AppHost.
+    ///
+    /// When enabled, all eShop services will send traces, metrics, and logs to SigNoz.
+    /// The SigNoz UI will be available at http://localhost:3301
+    ///
+    /// Usage:
+    ///   - Default: SigNoz containers start but Aspire dashboard receives telemetry
+    ///   - ESHOP_USE_SIGNOZ=1: SigNoz receives telemetry (Aspire dashboard may be empty)
     /// </summary>
-    public static IDistributedApplicationBuilder AddSigNozOpenTelemetry(this IDistributedApplicationBuilder builder, IResourceBuilder<ContainerResource> signozOtelCollector)
+    public static IDistributedApplicationBuilder AddSigNozOpenTelemetry(
+        this IDistributedApplicationBuilder builder,
+        IResourceBuilder<ContainerResource> signozOtelCollector)
     {
         builder.Services.TryAddEventingSubscriber<SigNozOpenTelemetrySubscriber>();
         builder.Services.AddSingleton(signozOtelCollector);
@@ -41,20 +54,33 @@ internal static class Extensions
         {
             eventing.Subscribe<BeforeStartEvent>((@event, ct) =>
             {
-                var otlpEndpoint = signozOtelCollector.GetEndpoint("grpc");
+                // Only redirect telemetry to SigNoz if explicitly enabled
+                // This preserves Aspire dashboard functionality by default
+                var useSigNoz = GetUseSigNozSetting();
+                if (!useSigNoz)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var otlpEndpoint = signozOtelCollector.GetEndpoint("http");
 
                 foreach (var p in @event.Model.GetProjectResources())
                 {
                     p.Annotations.Add(new EnvironmentCallbackAnnotation(context =>
                     {
-                        // Configure OTLP exporter to send to SigNoz
+                        // Configure OTLP exporter to send to SigNoz using HTTP protocol
                         context.EnvironmentVariables["OTEL_EXPORTER_OTLP_ENDPOINT"] = $"{otlpEndpoint}";
-                        context.EnvironmentVariables["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc";
+                        context.EnvironmentVariables["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf";
 
                         // Set resource attributes for better identification in SigNoz
-                        var serviceName = p.Name;
-                        context.EnvironmentVariables["OTEL_SERVICE_NAME"] = serviceName;
-                        context.EnvironmentVariables["OTEL_RESOURCE_ATTRIBUTES"] = $"service.name={serviceName},deployment.environment=development";
+                        // Note: OTEL_SERVICE_NAME is already set by Aspire, so we only add extra attributes
+                        var environment = executionContext.IsPublishMode ? "production" : "development";
+                        var existingAttrs = context.EnvironmentVariables.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out var attrs) ? attrs : "";
+                        var additionalAttrs = $"deployment.environment={environment}";
+
+                        context.EnvironmentVariables["OTEL_RESOURCE_ATTRIBUTES"] = string.IsNullOrEmpty(existingAttrs)
+                            ? additionalAttrs
+                            : $"{existingAttrs},{additionalAttrs}";
                     }));
                 }
 
@@ -62,6 +88,13 @@ internal static class Extensions
             });
 
             return Task.CompletedTask;
+        }
+
+        private static bool GetUseSigNozSetting()
+        {
+            const string EnvVarName = "ESHOP_USE_SIGNOZ";
+            var envValue = Environment.GetEnvironmentVariable(EnvVarName);
+            return int.TryParse(envValue, out int result) && result == 1;
         }
     }
 
