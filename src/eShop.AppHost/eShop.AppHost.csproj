@@ -29,4 +29,10 @@
     <ProjectReference Include="..\WebhookClient\WebhookClient.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="signoz\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

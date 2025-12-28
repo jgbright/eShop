@@ -25,6 +25,46 @@ internal static class Extensions
         return builder;
     }
 
+    /// <summary>
+    /// Configures OpenTelemetry to send telemetry data to SigNoz.
+    /// </summary>
+    public static IDistributedApplicationBuilder AddSigNozOpenTelemetry(this IDistributedApplicationBuilder builder, IResourceBuilder<ContainerResource> signozOtelCollector)
+    {
+        builder.Services.TryAddEventingSubscriber<SigNozOpenTelemetrySubscriber>();
+        builder.Services.AddSingleton(signozOtelCollector);
+        return builder;
+    }
+
+    private class SigNozOpenTelemetrySubscriber(IResourceBuilder<ContainerResource> signozOtelCollector) : IDistributedApplicationEventingSubscriber
+    {
+        public Task SubscribeAsync(IDistributedApplicationEventing eventing, DistributedApplicationExecutionContext executionContext, CancellationToken cancellationToken)
+        {
+            eventing.Subscribe<BeforeStartEvent>((@event, ct) =>
+            {
+                var otlpEndpoint = signozOtelCollector.GetEndpoint("grpc");
+
+                foreach (var p in @event.Model.GetProjectResources())
+                {
+                    p.Annotations.Add(new EnvironmentCallbackAnnotation(context =>
+                    {
+                        // Configure OTLP exporter to send to SigNoz
+                        context.EnvironmentVariables["OTEL_EXPORTER_OTLP_ENDPOINT"] = $"{otlpEndpoint}";
+                        context.EnvironmentVariables["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc";
+
+                        // Set resource attributes for better identification in SigNoz
+                        var serviceName = p.Name;
+                        context.EnvironmentVariables["OTEL_SERVICE_NAME"] = serviceName;
+                        context.EnvironmentVariables["OTEL_RESOURCE_ATTRIBUTES"] = $"service.name={serviceName},deployment.environment=development";
+                    }));
+                }
+
+                return Task.CompletedTask;
+            });
+
+            return Task.CompletedTask;
+        }
+    }
+
     private class AddForwardHeadersSubscriber : IDistributedApplicationEventingSubscriber
     {
         public Task SubscribeAsync(IDistributedApplicationEventing eventing, DistributedApplicationExecutionContext executionContext, CancellationToken cancellationToken)

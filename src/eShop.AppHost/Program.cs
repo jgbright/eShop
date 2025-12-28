@@ -17,6 +17,47 @@ var identityDb = postgres.AddDatabase("identitydb");
 var orderDb = postgres.AddDatabase("orderingdb");
 var webhooksDb = postgres.AddDatabase("webhooksdb");
 
+// SigNoz components for observability
+var clickhouse = builder.AddContainer("clickhouse", "clickhouse/clickhouse-server")
+    .WithImageTag("24.1.2-alpine")
+    .WithHttpEndpoint(port: 8123, targetPort: 8123, name: "http")
+    .WithEndpoint(port: 9000, targetPort: 9000, name: "native")
+    .WithLifetime(ContainerLifetime.Persistent)
+    .WithBindMount("./signoz/clickhouse-config.xml", "/etc/clickhouse-server/config.d/config.xml")
+    .WithBindMount("./signoz/clickhouse-user-config.xml", "/etc/clickhouse-server/users.d/users.xml")
+    .WithDataVolume();
+
+var signozOtelCollector = builder.AddContainer("signoz-otel-collector", "signoz/signoz-otel-collector")
+    .WithImageTag("0.102.8")
+    .WithHttpEndpoint(port: 4317, targetPort: 4317, name: "grpc")
+    .WithHttpEndpoint(port: 4318, targetPort: 4318, name: "http")
+    .WithLifetime(ContainerLifetime.Persistent)
+    .WithBindMount("./signoz/otel-collector-config.yaml", "/etc/otel-collector-config.yaml")
+    .WithArgs("--config", "/etc/otel-collector-config.yaml")
+    .WaitFor(clickhouse);
+
+var signozQueryService = builder.AddContainer("signoz-query-service", "signoz/query-service")
+    .WithImageTag("0.51.0")
+    .WithHttpEndpoint(port: 8080, targetPort: 8080, name: "http")
+    .WithLifetime(ContainerLifetime.Persistent)
+    .WithEnvironment("STORAGE", "clickhouse")
+    .WithEnvironment("CLICKHOUSE_HOST", "clickhouse")
+    .WithEnvironment("CLICKHOUSE_PORT", "9000")
+    .WithEnvironment("TELEMETRY_ENABLED", "true")
+    .WithEnvironment("DEPLOYMENT_TYPE", "docker-standalone-amd")
+    .WaitFor(clickhouse);
+
+var signozFrontend = builder.AddContainer("signoz-frontend", "signoz/frontend")
+    .WithImageTag("0.51.0")
+    .WithHttpEndpoint(port: 3301, targetPort: 3301, name: "http")
+    .WithExternalHttpEndpoints()
+    .WithLifetime(ContainerLifetime.Persistent)
+    .WithEnvironment("FRONTEND_API_ENDPOINT", "http://signoz-query-service:8080")
+    .WaitFor(signozQueryService);
+
+// Configure all services to send OpenTelemetry data to SigNoz
+builder.AddSigNozOpenTelemetry(signozOtelCollector);
+
 var launchProfileName = ShouldUseHttpForEndpoints() ? "http" : "https";
 
 // Services
